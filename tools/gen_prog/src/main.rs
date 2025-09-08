@@ -28,7 +28,7 @@ fn main() {
         eprintln!("failed to load target: {}", e);
         exit(1)
     });
-    let relation = Relation::new(&target);
+    let relation = Relation::new(&target, Some("syscallPair.json"));
     let rw = RelationWrapper::new(relation);
     let mut rng = SmallRng::from_entropy();
     for _ in 0..settings.n {

@@ -70,6 +70,7 @@ pub fn remove_call(ctx: &mut Context, _corpus: &CorpusWrapper, rng: &mut RngType
     true
 }
 
+/// 依据选择表，选择一个新的系统调用插入到位置 `idx`
 /// Select new call to location `idx`.
 fn select_call_to(ctx: &mut Context, rng: &mut RngType, idx: usize) -> SyscallId {
     let mut candidates: HashMap<SyscallId, u64> = HashMap::new();
@@ -77,28 +78,45 @@ fn select_call_to(ctx: &mut Context, rng: &mut RngType, idx: usize) -> SyscallId
     let calls = ctx.calls();
 
     // first, consider calls that can be influenced by calls before `idx`.
+    // If a call has verified path, improve its weight.
     for sid in calls[..idx].iter().map(|c| c.sid()) {
         for candidate in r.influence_of(sid).iter().copied() {
             let entry = candidates.entry(candidate).or_default();
             *entry += 1;
+
+            if let Some(path_and_verification_number) = r.relate_path_with_verification_num(candidate, sid) {
+                for number in path_and_verification_number.values() {
+                    *entry += *number as u64;
+                }
+            }
         }
     }
 
     // then, consider calls that can be influence calls after `idx`.
+    // If a call has verified path, improve its weight.
     if idx != calls.len() {
         for sid in calls[idx..].iter().map(|c| c.sid()) {
             for candidate in r.influence_by_of(sid).iter().copied() {
                 let entry = candidates.entry(candidate).or_default();
                 *entry += 1;
+
+                if let Some(path_and_verification_number) = r.relate_path_with_verification_num(sid, candidate) {
+                    for number in path_and_verification_number.values() {
+                        *entry += *number as u64;
+                    }
+                }
             }
         }
     }
 
     let candidates: Vec<(SyscallId, u64)> = candidates.into_iter().collect();
+    // for syscallid, weight in candidates.iter()
     if let Ok(candidate) = candidates.choose_weighted(rng, |candidate| candidate.1) {
         candidate.0
     } else {
         // failed to select with relation, use normal strategy.
+        // 如果这里把select_random_syscall的概率改为0，就意味着不会选除了依赖关系以外的任何系统调用.
+        // println!("No relation.");
         select_with_calls(ctx, rng)
     }
 }

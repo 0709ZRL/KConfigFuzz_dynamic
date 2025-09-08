@@ -8,12 +8,14 @@ members = [
     "healer_utils/healer_alloc",
     "healer_utils/healer_vm",
     "healer_utils/healer_io",
+    "healer_utils/addr_resolver",
     
     # tools mainly for debug purpose 
-    "tools/inspect_target",
-    "tools/gen_prog",
-    "tools/mutate_prog",
-    "tools/minimize"
+    # "tools/inspect_target",
+    # "tools/gen_prog",
+    # "tools/mutate_prog",
+    # "tools/minimize",
+    # "tools/config_relation",
 ]
 
 [profile.dev]

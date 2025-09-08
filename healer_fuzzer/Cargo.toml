@@ -13,6 +13,7 @@ path = "src/main.rs"
 healer_core = {path = "../healer_core"}
 healer_alloc = {path = "../healer_utils/healer_alloc"}
 healer_vm = {path = "../healer_utils/healer_vm"}
+addr_resolver = {path = "../healer_utils/addr_resolver"}
 syz_wrapper = {path = "../syz_wrapper"}
 serde = {version = "1"}
 serde_derive = "1"

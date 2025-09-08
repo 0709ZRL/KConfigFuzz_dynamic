@@ -73,6 +73,30 @@ struct Settings {
     /// Debug mode.
     #[structopt(long)]
     debug: bool,
+    /// SyscallPair path
+    #[structopt(long, short = "P")]
+    syscallPair_path: Option<String>,
+    /// codeblock2config path
+    #[structopt(long, short = "C")]
+    codeblock2config_path: Option<String>,
+    /// config_tree path
+    #[structopt(long, short = "T")]
+    config_tree_path: Option<String>,
+    /// vmlinux_path
+    #[structopt(long, short = "V")]
+    vmlinux_path: Option<String>,
+    /// linux source code path
+    #[structopt(long, short = "L")]
+    kernel_src_path: Option<String>,
+    /// Whether to open explicit dependencies.
+    #[structopt(short = "E")]
+    open_explicit: bool,
+    /// The ratio of explicit dependencies to be used.
+    #[structopt(long = "explicit_ratio", default_value = "1")]
+    explicit_ratio: f32,
+    /// The ratio of implicit dependencies to be used.
+    #[structopt(long = "implicit_ratio", default_value = "1")]
+    implicit_ratio: f32,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -123,6 +147,14 @@ fn main() -> anyhow::Result<()> {
         },
         bench: settings.bench,
         debug: settings.debug,
+        syscallPair_path: settings.syscallPair_path,
+        codeblock2config_path: settings.codeblock2config_path,
+        config_tree_path: settings.config_tree_path,
+        vmlinux_path: settings.vmlinux_path,
+        kernel_src_path: settings.kernel_src_path,
+        open_explicit: settings.open_explicit,
+        explicit_ratio: settings.explicit_ratio,
+        implicit_ratio: settings.implicit_ratio,
         ..Default::default()
     };
 

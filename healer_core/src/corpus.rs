@@ -1,5 +1,7 @@
+use crate::syscall::SyscallId;
 use crate::{gen::choose_weighted, prog::Prog, HashMap, RngType};
 use std::sync::RwLock;
+use std::collections::HashSet;
 
 #[derive(Debug)]
 pub struct CorpusWrapper {
@@ -47,6 +49,21 @@ impl CorpusWrapper {
     {
         let mut inner = self.inner.write().unwrap();
         inner.culling(f)
+    }
+
+    /// 统计corpus里的所有种子里有多少对显式依赖和隐式依赖
+    pub fn expImpDepCount(&self) -> (i32, i32) {
+        let inner = self.inner.read().unwrap();
+        let mut expPairs: HashSet<(SyscallId, SyscallId)> = HashSet::new();
+        let mut impPairs: HashSet<(SyscallId, SyscallId)> = HashSet::new();
+        for p in &inner.progs {
+            expPairs.extend(p.prog.explicitPairs.clone());
+            impPairs.extend(p.prog.implicitPairs.clone());
+        }
+        if expPairs.len() > 0 || impPairs.len() > 0 {
+            return (expPairs.len() as i32, impPairs.len() as i32);
+        }
+        (-1, -1)
     }
 }
 

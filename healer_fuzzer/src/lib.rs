@@ -18,6 +18,7 @@ use crate::{
     stats::Stats,
     util::{stop_req, stop_soon},
 };
+
 use anyhow::Context;
 use healer_core::{
     corpus::CorpusWrapper,
@@ -26,6 +27,7 @@ use healer_core::{
     relation::{Relation, RelationWrapper},
     target::Target,
     HashSet,
+    config2code::Config2Code,
 };
 use healer_vm::{qemu::QemuHandle, ssh::ssh_basic_cmd};
 use rand::{
@@ -41,7 +43,7 @@ use std::{
     path::{Path, PathBuf},
     process::Command,
     str::FromStr,
-    sync::Arc,
+    sync:: {Arc, Mutex},
     thread::{self, sleep},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -73,7 +75,8 @@ pub fn boot(mut config: Config) -> anyhow::Result<()> {
     });
     let stats = Arc::new(Stats::new());
 
-    let mut relation = Relation::new(&target);
+    // 由于加入了基于内核配置项的分析结果，因此这里需要加一个新的参数（详见healer_core/src/relation.rs），其默认名为syscallPair.json
+    let mut relation = Relation::new(&target, config.syscallPair_path.as_deref(), config.open_explicit, config.explicit_ratio, config.implicit_ratio);
     if let Some(r) = config.relations.as_ref() {
         log::info!("loading extra relations...");
         load_extra_relations(r, &mut relation, &target)
@@ -84,8 +87,10 @@ pub fn boot(mut config: Config) -> anyhow::Result<()> {
     if !config.output.exists() {
         create_dir_all(&config.output).context("failed to create output directory")?;
     }
-
+    // 所有用于测试的种子列表，这个列表里的种子会被打散成多份，
+    // 分给多个线程的测试器中。
     let mut all_progs = Vec::new();
+    // 有预始种子就加载
     if let Some(p) = config.input.as_ref() {
         log::info!("loading input progs...");
         all_progs = load_progs(p, &target).context("failed to load input progs")?;
@@ -144,6 +149,10 @@ pub fn boot(mut config: Config) -> anyhow::Result<()> {
     }
     let crash = CrashManager::with_whitelist(known_crashes, config.output.clone());
 
+    // 由于加入了基于内核配置项的分析结果，因此这里需要加两个新的参数（详见healer_core/src/config2code.rs），其默认名为codeblock2config.json和config_tree.json
+    let config2code = Config2Code::new(config.codeblock2config_path.as_deref(), config.config_tree_path.as_deref());
+    log::info!("Codeblock2config and config_tree loaded.");
+
     let shared_state = SharedState {
         target: Arc::new(target),
         relation: Arc::new(RelationWrapper::new(relation)),
@@ -151,8 +160,14 @@ pub fn boot(mut config: Config) -> anyhow::Result<()> {
         stats: Arc::clone(&stats),
         feedback: Arc::new(Feedback::new()),
         crash: Arc::new(crash),
+        config2code: Arc::new(config2code),
+        // 初始化产生新覆盖的种子数量为0
+        newCoverageSeedNum: Arc::new(Mutex::new(0u64)),
+        newcorpus: Arc::new(Mutex::new(Vec::new())),
     };
+    log::info!("Config2code is loaded.");
 
+    /// 启动虚拟机
     log::info!("pre-booting one vm...");
     let use_shm = target_exec_use_shm(sys_target);
     if use_shm {
@@ -197,10 +212,20 @@ pub fn boot(mut config: Config) -> anyhow::Result<()> {
     } else {
         None
     };
+    let stats_clone = Arc::clone(&stats);
     thread::spawn(move || {
-        if let Err(e) = stats.report(Duration::from_secs(10), out_stats) {
+        if let Err(e) = stats_clone.report(Duration::from_secs(10), out_stats) {
             // Handle this more carefully
             log::error!("failed to write stats: {}", e);
+        }
+    });
+
+    // 新增：每隔5分钟记录totalcorpus和newcorpus信息
+    let totalcorpus_clone = Arc::clone(&shared_state.corpus);
+    let newcorpus_clone = Arc::clone(&shared_state.newcorpus);
+    thread::spawn(move || {
+        if let Err(e) = stats.report_corpus(Duration::from_secs(300), Some("total_dependencies_ratio.txt"), Some("dependencies_ratio.txt"), totalcorpus_clone, newcorpus_clone) {
+            log::error!("failed to write dependencies ratio: {}", e);
         }
     });
 

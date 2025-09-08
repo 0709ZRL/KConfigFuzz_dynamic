@@ -12,6 +12,16 @@ impl Feedback {
         Self::default()
     }
 
+    pub fn get_max_cov(&self) -> HashSet<u32> {
+        let m = self.max_cov.read().unwrap();
+        m.clone()
+    }
+
+    pub fn get_cal_cov(&self) -> HashSet<u32> {
+        let m = self.cal_cov.read().unwrap();
+        m.clone()
+    }
+
     pub fn check_max_cov(&self, cov: impl IntoIterator<Item = u32>) -> HashSet<u32> {
         Self::check_inner(&self.max_cov, cov, true)
     }

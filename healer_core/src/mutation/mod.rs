@@ -35,7 +35,9 @@ pub fn mutate(
 ) -> bool {
     type MutateOperation = fn(&mut Context, &CorpusWrapper, &mut RngType) -> bool;
     const OPERATIONS: [MutateOperation; 4] = [insert_calls, mutate_call_args, splice, remove_call];
+    // 注意这里改动了
     const WEIGHTS: [u64; 4] = [400, 980, 999, 1000];
+    // const WEIGHTS: [u64; 2] = [600, 1000];
 
     let calls = std::mem::take(&mut p.calls);
     let mut ctx = Context::new(target, relation);
@@ -44,11 +46,13 @@ pub fn mutate(
 
     let mut mutated = false;
     let mut tries = 0;
+    // 最多尝试128次，直到有变异成功
     while tries < 128 && (!mutated || ctx.calls.is_empty() || rng.gen_ratio(1, 2)) {
         let idx = choose_weighted(rng, &WEIGHTS);
         debug_info!("using strategy-{}", idx);
         mutated = OPERATIONS[idx](&mut ctx, corpus, rng);
 
+        // 如果种子的长度超限了，删除多余的系统调用
         if ctx.calls.len() >= prog_len_range().end {
             remove_extra_calls(&mut ctx);
         }

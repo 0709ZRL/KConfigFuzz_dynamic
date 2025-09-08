@@ -1,8 +1,22 @@
 //! Relation learning algorithm.
 
-use std::sync::RwLock;
+use std::{arch::x86_64::_MM_EXCEPT_INEXACT, sync::RwLock};
+use std::collections::HashSet;
+use rand::Rng;
 
 use crate::{prog::Prog, syscall::SyscallId, target::Target, HashMap};
+
+use pest::iterators::Pair;
+use serde::Deserialize;
+
+type SyscallPair = (SyscallId, SyscallId);
+
+#[derive(Deserialize, Debug)]
+pub struct JsonEntry {
+    Target: Vec<String>,
+    Relate: Vec<String>,
+    Addr: u64
+}
 
 #[derive(Debug)]
 pub struct RelationWrapper {
@@ -22,7 +36,7 @@ impl RelationWrapper {
     {
         let mut inner = self.inner.write().unwrap();
         inner.try_update(p, idx, pred)
-    }
+    } 
 
     /// Return if `a` can influence the execution of `b`.
     #[inline]
@@ -44,6 +58,34 @@ impl RelationWrapper {
         let inner = self.inner.read().unwrap();
         inner.num()
     }
+
+    /// Return the paths(usually addresses) that relate syscall `a` and `b`.
+    #[inline]
+    pub fn relate_path(&self, a: SyscallId, b: SyscallId) -> Option<Vec<u64>> {
+        let inner = self.inner.read().unwrap();
+        inner.relate_path(a, b)
+    }
+
+    /// Validate the given path of (Syscall_a, Syscall_b).
+    #[inline]
+    pub fn update_validation(&self, a: SyscallId, b: SyscallId, expected_path: &u64) {
+        let mut inner = self.inner.write().unwrap();
+        inner.relate_path.entry((a, b)).or_insert_with(|| HashMap::<u64, u32>::new())
+            .entry(expected_path.clone()).and_modify(|e| *e += 1).or_insert(1);
+        // inner.relate_path.entry((a, b)).or_insert_with(|| HashMap::<u64, u32>::new())
+        //     .insert(expected_path.clone(), update_value);
+        if *(inner.relate_path.get(&(a, b)).unwrap().get(expected_path).unwrap()) > 1 {
+            println!("Successfully validated ( {:}, {:} ) at addr: {:}", a, b, expected_path);
+        }
+        // 别忘了验证后，把这个新关系加进去（如果没有的话）
+        inner.push_ordered(a, b);
+    }
+
+    /// 检查当前的系统调用对是显式依赖还是隐式依赖。
+    /// 注：这个系统调用对必须是依赖对。
+    pub fn is_explicit_dependency(&self, target: &Target, a: SyscallId, b: SyscallId) -> bool {
+        Relation::calculate_influence(target, a, b)
+    }
 }
 
 /// Influence relations between syscalls.
@@ -51,33 +93,115 @@ impl RelationWrapper {
 pub struct Relation {
     influence: HashMap<SyscallId, Vec<SyscallId>>,
     influence_by: HashMap<SyscallId, Vec<SyscallId>>,
+    relate_path: HashMap::<SyscallPair, HashMap<u64, u32>>,
     n: usize,
 }
 
 impl Relation {
     /// Create initial relations based on syscall type information.
-    pub fn new(target: &Target) -> Self {
+    pub fn new(target: &Target, json_path: Option<&str>, open_explicit: bool, explicit_ratio: f32, implicit_ratio: f32) -> Self {
+        // 基于系统调用描述符建立起来的显式依赖关系
         let influence: HashMap<SyscallId, Vec<SyscallId>> = target
             .enabled_syscalls()
             .iter()
             .map(|syscall| (syscall.id(), Vec::new()))
             .collect();
         let influence_by = influence.clone();
+        let mut relate_path = HashMap::<SyscallPair, HashMap<u64, u32>>::new();
         let mut r = Relation {
             influence,
             influence_by,
+            relate_path,
             n: 0,
         };
-
-        for i in target.enabled_syscalls().iter().map(|s| s.id()) {
-            for j in target.enabled_syscalls().iter().map(|s| s.id()) {
-                if i != j && Self::calculate_influence(target, i, j) {
-                    r.push_ordered(i, j);
+        let mut explicit_pairs = HashSet::new();
+        let mut generate_dependency: f32 = 0.0;
+        let mut rng = rand::thread_rng();
+        // 如果想测试只有config-based静态分析的依赖的效果，就把open_explicit设成false
+        if open_explicit {
+            for i in target.enabled_syscalls().iter().map(|s| s.id()) {
+                for j in target.enabled_syscalls().iter().map(|s| s.id()) {
+                    if i != j && Self::calculate_influence(target, i, j) {
+                        // 随机生成一个0-1间的f32类型随机数，决定是否添加该依赖
+                        generate_dependency = rng.gen_range(0.0..1.0);
+                        if generate_dependency < explicit_ratio {
+                            r.push_ordered(i, j);
+                            explicit_pairs.insert((i, j));
+                        }
+                    }
                 }
             }
+            println!("Length of explicit depndencies: {:}", explicit_pairs.len());
+            drop(explicit_pairs);
+        }
+
+        // 查询两个系统调用是否有依赖关系
+        // let syscall_a = "getpid";
+        // let syscall_b = "read";
+        // let a_id = target.syscall_of_name(syscall_a);
+        // let b_id = target.syscall_of_name(syscall_b);
+        // println!("{:} and {:} is related? {:}", syscall_a, syscall_b, r.influence(a_id.unwrap().id(), b_id.unwrap().id()));
+
+        // 加载syscallPair.json，注入额外的关系
+        if let Some(path) = json_path {
+            if let Err(e) = r.load_json_relations(path, target, implicit_ratio) {
+                eprintln!("Failed to load JSON relations from {}: {}", path, e);
+            }
+        } else {
+            log::info!("No syscallPair specified. Using syscall type information only.");
         }
 
         r
+    }
+
+    /// 私有方法：从JSON里加载关系
+    fn load_json_relations(&mut self, path: &str, target: &Target, implicit_ratio: f32) -> Result<(), Box<dyn std::error::Error>> {
+        use std::fs::File;
+        use std::io::Read;
+
+        let mut file = File::open(path)?;
+        let mut contents = String::new();
+        file.read_to_string(&mut contents)?;
+        let entries: Vec<JsonEntry> = serde_json::from_str(&contents)?;
+
+        let mut implicit_pairs = HashSet::new();
+        for entry in entries {
+            // 解析地址
+            let addr = entry.Addr;
+            // 先解析Target，从syscall名到SyscallId
+            let target_syscalls: Vec<SyscallId> = entry.Target.iter()
+                .filter_map(|s| target.syscall_of_name(s).map(|syscall| syscall.id()))
+                .collect();
+            // 再解析Relate，同样从syscall名到SyscallId
+            let relate_syscalls: Vec<SyscallId> = entry.Relate.iter()
+                .filter_map(|s| target.syscall_of_name(s).map(|syscall| syscall.id()))
+                .collect();
+            // 建立关系并存储
+            let mut rng = rand::thread_rng();
+            if !target_syscalls.is_empty() && !relate_syscalls.is_empty() {
+                for a in &target_syscalls {
+                    for b in &relate_syscalls {
+                        if a != b {
+                            if !self.influence(*a, *b) {
+                                implicit_pairs.insert((*a, *b));
+                            }
+                            // 随机生成一个0-1间的f32类型随机数，决定是否添加该依赖
+                            let mut generate_dependency = rng.gen_range(0.0..1.0);
+                            if generate_dependency < implicit_ratio {
+                                self.push_ordered(*a, *b);
+
+                                let key = (*a, *b);
+                                let paths = self.relate_path.entry(key).or_insert_with(|| HashMap::<u64, u32>::new());
+                                paths.insert(addr, 0);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        println!("Length of implicit dependencies: {:}", implicit_pairs.len());
+        drop(implicit_pairs);
+        Ok(())
     }
 
     /// Calculate if syscall `a` can influence the execution of syscall `b` based on
@@ -112,6 +236,9 @@ impl Relation {
     /// the index of `read` in the new `prog` and the callback `changed` should judge the feedback
     /// changes of the `index` call after the execution of `new_prog`. Finally, `try_update` returns
     /// the number of detected new relations.
+    /// 人话：分析p[idx]系统调用的依赖时，尝试删除p[idx-1]，如果删除后p[idx]的覆盖变了（变大还是变小？如果变大怎么办，岂不说明是反向关系？这个论文没有考虑），就说明p[idx]依赖p[idx-1]，否则就不依赖。
+    /// 补充：这里存在一个问题：如果种子最小化后只剩下ABC，他只会认为依赖关系是A->B->C，而不会认为A->C且B->C，这可能会导致分析的配置项关系是错误的。而有了配置项后，这个问题会被解决。
+    /// 怎么解决？参见我们的函数try_update_by_config。
     pub fn try_update<T>(&mut self, p: &Prog, idx: usize, mut pred: T) -> bool
     where
         T: FnMut(&Prog, usize) -> bool, // fn(new_prog: &Prog, index: usize) -> bool
@@ -122,6 +249,15 @@ impl Relation {
         }
         let a = &p.calls[idx - 1];
         let b = &p.calls[idx];
+
+        // 想用这个方法来推测1-假阳性的值
+        // 在update前，看minimize后的种子（此时它一定包含依赖对）的依赖对是否本就存在，如果本就存在且有relate_path，那就是隐式依赖
+        // let mut is_implicit_dependency = false;
+        // if let Some(_relate_path) = self.relate_path(a.sid(), b.sid()) {
+        //     is_implicit_dependency = true;
+        // }
+        // println!("Found relation in seeds: {:} -> {:} {:} {:}", a.sid(), b.sid(), self.influence(a.sid(), b.sid()), is_implicit_dependency);
+
         if !self.influence(a.sid(), b.sid()) {
             let new_p = p.remove_call(idx - 1);
             if pred(&new_p, idx - 1) {
@@ -155,6 +291,20 @@ impl Relation {
     #[inline]
     pub fn influence_by_of(&self, a: SyscallId) -> &[SyscallId] {
         &self.influence_by[&a]
+    }
+
+    /// Return the paths(usually addresses) that relate syscall `a` and `b`.
+    #[inline]
+    pub fn relate_path(&self, a: SyscallId, b: SyscallId) -> Option<Vec<u64>> {
+        let res = self.relate_path.get(&(a, b)).map(|map| map.keys().copied().collect());
+        res
+    }
+
+    /// Return the paths(usually addresses) and verification number that relate syscall `a` and `b`.
+    #[inline]
+    pub fn relate_path_with_verification_num(&self, a: SyscallId, b: SyscallId) -> Option<&HashMap<u64, u32>> {
+        let res = self.relate_path.get(&(a, b));
+        res
     }
 
     #[inline(always)]

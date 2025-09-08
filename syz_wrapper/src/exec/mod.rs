@@ -110,7 +110,9 @@ impl Default for ExecOpt {
 impl ExecOpt {
     pub const fn new() -> Self {
         Self {
+            // 注意这里的改动
             flags: FLAG_DEDUP_COVER | FLAG_THREADED | FLAG_COLLIDE,
+            // flags: FLAG_DEDUP_COVER,
             fault_call: 0,
             fault_nth: 0,
         }

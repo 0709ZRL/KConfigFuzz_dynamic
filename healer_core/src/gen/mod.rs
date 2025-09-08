@@ -34,8 +34,11 @@ pub mod int;
 pub mod ptr;
 pub mod res;
 
+// 注意这里改了种子的最小长度和最大长度
 pub const FAVORED_MIN_PROG_LEN: usize = 16;
 pub const FAVORED_MAX_PROG_LEN: usize = 25;
+// pub const FAVORED_MIN_PROG_LEN: usize = 2;
+// pub const FAVORED_MAX_PROG_LEN: usize = 2;
 
 thread_local! {
     static NEXT_PROG_LEN: Cell<usize> = Cell::new(FAVORED_MIN_PROG_LEN);

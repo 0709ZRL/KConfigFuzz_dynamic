@@ -41,6 +41,16 @@ pub struct Config {
     pub use_unix_sock: bool,
     pub bench: bool,
     pub debug: bool,
+
+    pub syscallPair_path: Option<String>,
+    pub codeblock2config_path: Option<String>,
+    pub config_tree_path: Option<String>,
+    pub vmlinux_path: Option<String>,
+    pub kernel_src_path: Option<String>,
+    pub open_explicit: bool,
+
+    pub explicit_ratio: f32,
+    pub implicit_ratio: f32,
 }
 
 impl Default for Config {
@@ -70,6 +80,17 @@ impl Default for Config {
             use_unix_sock: true,
             bench: false,
             debug: false,
+
+            syscallPair_path: None,
+            codeblock2config_path: None,
+            config_tree_path: None,
+
+            vmlinux_path: None,
+            kernel_src_path: None,
+            open_explicit: false,
+
+            explicit_ratio: 1.0,
+            implicit_ratio: 1.0,
         }
     }
 }

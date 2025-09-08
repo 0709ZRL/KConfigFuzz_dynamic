@@ -1,0 +1,11 @@
+[package]
+name = "addr_resolver"
+version = "0.1.0"
+edition = "2018"
+description = "Resolve u32 kernel addresses (expand to 64-bit, high-32bits=1) to source:line using vmlinux DWARF."
+
+[dependencies]
+anyhow = "1.0"
+addr2line = "0.16"
+object = "0.26.2"
+gimli = "0.25.0"

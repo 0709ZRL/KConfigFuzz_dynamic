@@ -5,6 +5,7 @@ use crate::{
     value::{ResValue, ResValueId, Value, ValueKind},
     verbose::verbose_mode,
     HashMap, HashSet,
+    relation::RelationWrapper,
 };
 
 // #[derive(Debug, Clone)]
@@ -146,12 +147,16 @@ impl CallBuilder {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Prog {
     pub(crate) calls: Vec<Call>,
+    pub explicitPairs: HashSet<(SyscallId, SyscallId)>,
+    pub implicitPairs: HashSet<(SyscallId, SyscallId)>
 }
 
 impl Prog {
     #[inline(always)]
     pub fn new(calls: Vec<Call>) -> Self {
-        Self { calls }
+        let explicitPairs = HashSet::new();
+        let implicitPairs = HashSet::new();
+        Self { calls, explicitPairs, implicitPairs }
     }
 
     #[inline(always)]
@@ -231,6 +236,25 @@ impl Prog {
                 Self::set_res_val_to_null(&mut val.option, ids);
             }
             _ => (),
+        }
+    }
+
+    // 寻找这个prog里包含几个显式依赖，几个隐式依赖，并记录下来
+    // 鉴于一个种子的长度不会太长（20个系统调用以内？），这个双重循环不会那么费时间？
+    pub fn foundSyscallPairInProg(&mut self, target: &Target, relation: &RelationWrapper) {
+        for i in 0..self.calls.len() {
+            let call_i = self.calls[i].sid();
+            for j in (i + 1)..self.calls.len() {
+                let call_j = self.calls[j].sid();
+                // 这里只考虑前面的系统调用是否会影响后面的系统调用
+                if relation.influence(call_i, call_j) {
+                    if relation.is_explicit_dependency(target, call_i, call_j) {
+                        self.explicitPairs.insert((call_i, call_j));
+                    } else {
+                        self.implicitPairs.insert((call_i, call_j));
+                    }
+                }
+            }
         }
     }
 }

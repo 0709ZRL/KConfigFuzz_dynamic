@@ -43,7 +43,9 @@ pub fn select_with_calls(ctx: &Context, rng: &mut RngType) -> SyscallId {
         select_res_output_syscall, // 15%
         select_random_syscall,     // 5%
     ];
+    // 如果这里把select_random_syscall的概率改为0，就意味着不会选除了依赖关系以外的任何系统调用.
     const WEIGHTS: [Weight; 4] = [60, 80, 95, 100];
+    // const WEIGHTS: [Weight; 1] = [100];
 
     loop {
         let idx = choose_weighted(rng, &WEIGHTS);

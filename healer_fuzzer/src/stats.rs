@@ -1,13 +1,20 @@
 use crate::util::stop_soon;
 use anyhow::{Context, Result};
+use healer_core::corpus::CorpusWrapper;
+use healer_core::prog::Prog;
+use healer_core::syscall::SyscallId;
+use healer_core::HashSet;
 use serde::{Deserialize, Serialize};
 use std::fs::{File, OpenOptions};
 use std::path::Path;
 use std::thread::sleep;
 use std::{
     sync::atomic::{AtomicU64, Ordering},
+    sync::Mutex,
     time::Duration,
 };
+use std::io::Write;
+use crate::Arc;
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub(crate) struct Stats {
@@ -120,6 +127,84 @@ impl Stats {
 
             if let Some(f) = f.as_mut() {
                 serde_json::to_writer_pretty(f, self).context("dump stats")?;
+            }
+        }
+
+        Ok(())
+    }
+
+    pub(crate) fn report_corpus<P: AsRef<Path>>(
+        &self,
+        duration: Duration,
+        totalcorpus_out_dir: Option<P>,
+        newcorpus_out_dir: Option<P>,
+        totalcorpus: Arc<CorpusWrapper>,
+        newcorpus: Arc<Mutex<Vec<Prog>>>,
+    ) -> Result<()> {
+        let mut f1: Option<File> = if let Some(d) = totalcorpus_out_dir {
+            let p = d.as_ref();
+            let f1 = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .write(true)
+                .open(p)
+                .context("report")?;
+            Some(f1)
+        } else {
+            None
+        };
+
+        let mut f2: Option<File> = if let Some(d) = newcorpus_out_dir {
+            let p = d.as_ref();
+            let f2 = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .write(true)
+                .open(p)
+                .context("report")?;
+            Some(f2)
+        } else {
+            None
+        };
+
+        while !stop_soon() {
+            sleep(duration);
+
+            // 统计totalcorpus的长度和里面的显式隐式依赖数量
+            let totalcorpus_size = self.corpus_size.load(Ordering::Relaxed);
+            let (expNumTotal, impNumTotal) = totalcorpus.expImpDepCount();
+
+            // 先把newcorpus复制一份给记录函数用
+            let newcorpus_clone = newcorpus.lock().unwrap().clone();
+            let newcorpus_size = newcorpus_clone.len() as i32;
+            // 然后再清掉
+            newcorpus.lock().unwrap().clear();
+            let mut expPairs: HashSet<(SyscallId, SyscallId)> = HashSet::new();
+            let mut impPairs: HashSet<(SyscallId, SyscallId)> = HashSet::new();
+            for p in newcorpus_clone.iter() {
+                expPairs.extend(p.explicitPairs.clone());
+                impPairs.extend(p.implicitPairs.clone());
+            }
+
+            let expNum = if expPairs.len() > 0 {
+                expPairs.len() as i32
+            } else {
+                -1
+            };
+            let impNum = if impPairs.len() > 0 {
+                impPairs.len() as i32
+            } else {
+                -1
+            };
+
+            if let Some(f1) = f1.as_mut() {
+                writeln!(f1, "{} {} {}", totalcorpus_size, expNumTotal, impNumTotal).context("dump corpus stats")?;
+                println!("total dependency has written into the file.");
+            }
+            
+            if let Some(f2) = f2.as_mut() {
+                writeln!(f2, "{} {} {}", newcorpus_size, expNum, impNum).context("dump corpus stats")?;
+                println!("dependency has written into the file.");
             }
         }
 
