@@ -38,6 +38,10 @@ pub struct SharedState {
     pub(crate) stats: Arc<Stats>,
     pub(crate) feedback: Arc<Feedback>,
     pub(crate) crash: Arc<CrashManager>,
+    // 新增项，配置项与代码块的映射信息
+    pub(crate) config2code: Arc<Config2Code>,
+    // 新增项，统计产生新覆盖的种子数量
+    pub(crate) newCoverageSeedNum: Arc<Mutex<u64>>,
 }
 
 impl Clone for SharedState {
@@ -49,6 +53,8 @@ impl Clone for SharedState {
             stats: Arc::clone(&self.stats),
             feedback: Arc::clone(&self.feedback),
             crash: Arc::clone(&self.crash),
+            config2code: Arc::clone(&self.config2code),
+            newCoverageSeedNum: Arc::clone(&self.newCoverageSeedNum)
         }
     }
 }
@@ -270,6 +276,9 @@ impl Fuzzer {
             // TODO dump relations
             fuzzer_debug!("new relation: {} -> {}", a.name(), b.name());
         }
+        
+        // 记录种子里的显式与隐式依赖对
+        // p.foundSyscallPairInProg(&self.shared_state.target, &self.shared_state.relation);
 
         // save to local
         self.do_save_prog(p.clone(), &brs)?;

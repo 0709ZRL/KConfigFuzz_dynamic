@@ -151,6 +151,9 @@ pub fn boot(mut config: Config) -> anyhow::Result<()> {
         stats: Arc::clone(&stats),
         feedback: Arc::new(Feedback::new()),
         crash: Arc::new(crash),
+        config2code: Arc::new(config2code),
+        // 初始化产生新覆盖的种子数量为0
+        newCoverageSeedNum: Arc::new(Mutex::new(0u64)),
     };
 
     log::info!("pre-booting one vm...");
