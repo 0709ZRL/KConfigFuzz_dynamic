@@ -51,19 +51,22 @@ impl CorpusWrapper {
         inner.culling(f)
     }
 
-    /// 统计corpus里的所有种子里有多少对显式依赖和隐式依赖
-    pub fn expImpDepCount(&self) -> (i32, i32) {
+    /// 统计corpus里的所有种子里各种显式依赖和隐式依赖有多少对
+    pub fn expImpDepCount(&self) -> (HashMap<(SyscallId, SyscallId), u32>, HashMap<(SyscallId, SyscallId), u32>) {
         let inner = self.inner.read().unwrap();
-        let mut expPairs: HashSet<(SyscallId, SyscallId)> = HashSet::new();
-        let mut impPairs: HashSet<(SyscallId, SyscallId)> = HashSet::new();
+        let mut expPairs: HashMap<(SyscallId, SyscallId), u32> = HashMap::new();
+        let mut impPairs: HashMap<(SyscallId, SyscallId), u32> = HashMap::new();
         for p in &inner.progs {
-            expPairs.extend(p.prog.explicitPairs.clone());
-            impPairs.extend(p.prog.implicitPairs.clone());
+            // 迭代种子里的每个显式依赖以及其对应的数量，把它加到expPairs里
+            for (k, v) in &p.prog.explicitPairs {
+                *expPairs.entry(*k).or_insert(0) += *v;
+            }
+            // 隐式依赖同理
+            for (k, v) in &p.prog.implicitPairs {
+                *impPairs.entry(*k).or_insert(0) += *v;
+            }
         }
-        if expPairs.len() > 0 || impPairs.len() > 0 {
-            return (expPairs.len() as i32, impPairs.len() as i32);
-        }
-        (-1, -1)
+        (expPairs, impPairs)
     }
 }
 

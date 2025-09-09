@@ -147,15 +147,15 @@ impl CallBuilder {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Prog {
     pub(crate) calls: Vec<Call>,
-    pub explicitPairs: HashSet<(SyscallId, SyscallId)>,
-    pub implicitPairs: HashSet<(SyscallId, SyscallId)>
+    pub explicitPairs: HashMap<(SyscallId, SyscallId), u32>,
+    pub implicitPairs: HashMap<(SyscallId, SyscallId), u32>
 }
 
 impl Prog {
     #[inline(always)]
     pub fn new(calls: Vec<Call>) -> Self {
-        let explicitPairs = HashSet::new();
-        let implicitPairs = HashSet::new();
+        let explicitPairs = HashMap::new();
+        let implicitPairs = HashMap::new();
         Self { calls, explicitPairs, implicitPairs }
     }
 
@@ -249,9 +249,10 @@ impl Prog {
                 // 这里只考虑前面的系统调用是否会影响后面的系统调用
                 if relation.influence(call_i, call_j) {
                     if relation.is_explicit_dependency(target, call_i, call_j) {
-                        self.explicitPairs.insert((call_i, call_j));
+                        // 把HashMap里对应的那一项+1
+                        self.explicitPairs.entry((call_i, call_j)).and_modify(|e| *e += 1).or_insert(1);
                     } else {
-                        self.implicitPairs.insert((call_i, call_j));
+                        self.implicitPairs.entry((call_i, call_j)).and_modify(|e| *e += 1).or_insert(1);
                     }
                 }
             }

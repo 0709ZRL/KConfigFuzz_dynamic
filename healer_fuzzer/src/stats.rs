@@ -1,9 +1,8 @@
 use crate::util::stop_soon;
 use anyhow::{Context, Result};
 use healer_core::corpus::CorpusWrapper;
-use healer_core::prog::Prog;
-use healer_core::syscall::SyscallId;
-use healer_core::HashSet;
+use healer_core::syscall::Syscall;
+use healer_core::target::Target;
 use serde::{Deserialize, Serialize};
 use std::fs::{File, OpenOptions};
 use std::path::Path;
@@ -136,33 +135,19 @@ impl Stats {
     pub(crate) fn report_corpus<P: AsRef<Path>>(
         &self,
         duration: Duration,
-        totalcorpus_out_dir: Option<P>,
-        newcorpus_out_dir: Option<P>,
-        totalcorpus: Arc<CorpusWrapper>,
-        newcorpus: Arc<Mutex<Vec<Prog>>>,
+        corpus_out_dir: Option<P>,
+        corpus: Arc<CorpusWrapper>,
+        target: Arc<Target>,
     ) -> Result<()> {
-        let mut f1: Option<File> = if let Some(d) = totalcorpus_out_dir {
+        let mut f: Option<File> = if let Some(d) = corpus_out_dir {
             let p = d.as_ref();
-            let f1 = OpenOptions::new()
+            let f = OpenOptions::new()
                 .create(true)
                 .append(true)
                 .write(true)
                 .open(p)
                 .context("report")?;
-            Some(f1)
-        } else {
-            None
-        };
-
-        let mut f2: Option<File> = if let Some(d) = newcorpus_out_dir {
-            let p = d.as_ref();
-            let f2 = OpenOptions::new()
-                .create(true)
-                .append(true)
-                .write(true)
-                .open(p)
-                .context("report")?;
-            Some(f2)
+            Some(f)
         } else {
             None
         };
@@ -170,41 +155,36 @@ impl Stats {
         while !stop_soon() {
             sleep(duration);
 
-            // 统计totalcorpus的长度和里面的显式隐式依赖数量
-            let totalcorpus_size = self.corpus_size.load(Ordering::Relaxed);
-            let (expNumTotal, impNumTotal) = totalcorpus.expImpDepCount();
+            // 统计corpus里的所有种子里各种显式依赖和隐式依赖有多少对
+            let (explicitPair, implicitPair) = corpus.expImpDepCount();
 
-            // 先把newcorpus复制一份给记录函数用
-            let newcorpus_clone = newcorpus.lock().unwrap().clone();
-            let newcorpus_size = newcorpus_clone.len() as i32;
-            // 然后再清掉
-            newcorpus.lock().unwrap().clear();
-            let mut expPairs: HashSet<(SyscallId, SyscallId)> = HashSet::new();
-            let mut impPairs: HashSet<(SyscallId, SyscallId)> = HashSet::new();
-            for p in newcorpus_clone.iter() {
-                expPairs.extend(p.explicitPairs.clone());
-                impPairs.extend(p.implicitPairs.clone());
-            }
-
-            let expNum = if expPairs.len() > 0 {
-                expPairs.len() as i32
-            } else {
-                -1
-            };
-            let impNum = if impPairs.len() > 0 {
-                impPairs.len() as i32
-            } else {
-                -1
-            };
-
-            if let Some(f1) = f1.as_mut() {
-                writeln!(f1, "{} {} {}", totalcorpus_size, expNumTotal, impNumTotal).context("dump corpus stats")?;
+            if let Some(f) = f.as_mut() {
+                // 先输出"Explicit: xx"代表下面的内容是显式依赖
+                writeln!(f, "Explicit: {}", explicitPair.len()).context("dump corpus stats")?;
+                // 然后把每一对显式依赖及数量以"sysA sysB count"的格式写入文件
+                for ((a, b), count) in &explicitPair {
+                    let syscall_a_name = target
+                        .syscall_of(a.clone())
+                        .name();
+                    let syscall_b_name = target
+                        .syscall_of(b.clone())
+                        .name();
+                    writeln!(f, "({} -> {}) : {}", syscall_a_name, syscall_b_name, count).context("dump corpus stats")?;
+                }
+                // 隐式依赖同理
+                // 先输出"Implicit: xx"代表下面的内容是隐式依赖
+                writeln!(f, "Implicit: {}", implicitPair.len()).context("dump corpus stats")?;
+                // 然后把每一对隐式依赖及数量以"sysA sysB count"的格式写入文件
+                for ((a, b), count) in &implicitPair {
+                    let syscall_a_name = target
+                        .syscall_of(a.clone())
+                        .name();
+                    let syscall_b_name = target
+                        .syscall_of(b.clone())
+                        .name();
+                    writeln!(f, "({} -> {}) : {}", syscall_a_name, syscall_b_name, count).context("dump corpus stats")?;
+                }
                 println!("total dependency has written into the file.");
-            }
-            
-            if let Some(f2) = f2.as_mut() {
-                writeln!(f2, "{} {} {}", newcorpus_size, expNum, impNum).context("dump corpus stats")?;
-                println!("dependency has written into the file.");
             }
         }
 

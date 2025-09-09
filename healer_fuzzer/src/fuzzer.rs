@@ -39,7 +39,7 @@ pub struct SharedState {
     // 新增项，统计产生新覆盖的种子数量
     pub(crate) newCoverageSeedNum: Arc<Mutex<u64>>,
     // 新增项，每隔固定时间加入到种子库的新种子
-    pub(crate) newcorpus: Arc<Mutex<Vec<Prog>>>,
+    // pub(crate) newcorpus: Arc<Mutex<Vec<Prog>>>,
 }
 
 impl Clone for SharedState {
@@ -53,7 +53,7 @@ impl Clone for SharedState {
             crash: Arc::clone(&self.crash),
             config2code: Arc::clone(&self.config2code),
             newCoverageSeedNum: Arc::clone(&self.newCoverageSeedNum),
-            newcorpus: Arc::clone(&self.newcorpus),
+            // newcorpus: Arc::clone(&self.newcorpus),
         }
     }
 }
@@ -395,7 +395,7 @@ impl Fuzzer {
         self.do_save_prog(p.clone(), &brs)?;
 
         // 将新种子存到newcorpus里去
-        self.shared_state.newcorpus.lock().unwrap().push(p.clone());
+        // self.shared_state.newcorpus.lock().unwrap().push(p.clone());
 
         // fail call that found new cov
         if self.should_fail(&p) {

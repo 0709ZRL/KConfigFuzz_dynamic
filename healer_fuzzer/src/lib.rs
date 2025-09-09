@@ -163,7 +163,7 @@ pub fn boot(mut config: Config) -> anyhow::Result<()> {
         config2code: Arc::new(config2code),
         // 初始化产生新覆盖的种子数量为0
         newCoverageSeedNum: Arc::new(Mutex::new(0u64)),
-        newcorpus: Arc::new(Mutex::new(Vec::new())),
+        // newcorpus: Arc::new(Mutex::new(Vec::new())),
     };
     log::info!("Config2code is loaded.");
 
@@ -220,11 +220,14 @@ pub fn boot(mut config: Config) -> anyhow::Result<()> {
         }
     });
 
-    // 新增：每隔5分钟记录totalcorpus和newcorpus信息
-    let totalcorpus_clone = Arc::clone(&shared_state.corpus);
-    let newcorpus_clone = Arc::clone(&shared_state.newcorpus);
+    // 新增：每隔5分钟记录corpus信息
+    let corpus_clone = Arc::clone(&shared_state.corpus);
+    let target_clone = Arc::clone(&shared_state.target);
     thread::spawn(move || {
-        if let Err(e) = stats.report_corpus(Duration::from_secs(300), Some("total_dependencies_ratio.txt"), Some("dependencies_ratio.txt"), totalcorpus_clone, newcorpus_clone) {
+        if let Err(e) = stats.report_corpus(Duration::from_secs(300), 
+                                   Some("dependencies_count.txt"),
+                                   corpus_clone,
+                                   target_clone) {
             log::error!("failed to write dependencies ratio: {}", e);
         }
     });
