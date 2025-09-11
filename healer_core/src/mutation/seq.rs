@@ -11,9 +11,10 @@ use crate::{
     HashMap, RngType,
 };
 use rand::prelude::*;
+use std::sync::atomic::{Ordering, AtomicBool};
 
 /// Select a prog from `corpus` and splice it with calls in the `ctx` randomly.
-pub fn splice(ctx: &mut Context, corpus: &CorpusWrapper, rng: &mut RngType) -> bool {
+pub fn splice(ctx: &mut Context, corpus: &CorpusWrapper, rng: &mut RngType, current_period: bool, dependency_choice: bool) -> bool {
     if ctx.calls.is_empty() || ctx.calls.len() > prog_len_range().end || corpus.is_empty() {
         return false;
     }
@@ -34,14 +35,14 @@ pub fn splice(ctx: &mut Context, corpus: &CorpusWrapper, rng: &mut RngType) -> b
 }
 
 /// Insert calls to random location of ctx's calls.
-pub fn insert_calls(ctx: &mut Context, _corpus: &CorpusWrapper, rng: &mut RngType) -> bool {
+pub fn insert_calls(ctx: &mut Context, _corpus: &CorpusWrapper, rng: &mut RngType, current_period: bool, dependency_choice: bool) -> bool {
     if ctx.calls.len() > prog_len_range().end {
         return false;
     }
 
     let idx = rng.gen_range(0..=ctx.calls.len());
     restore_res_ctx(ctx, idx); // restore the resource information before call `idx`
-    let sid = select_call_to(ctx, rng, idx);
+    let sid = select_call_to(ctx, rng, idx, current_period, dependency_choice);
     debug_info!(
         "insert_calls: inserting {} to location {}",
         ctx.target.syscall_of(sid).name(),
@@ -56,7 +57,7 @@ pub fn insert_calls(ctx: &mut Context, _corpus: &CorpusWrapper, rng: &mut RngTyp
     true
 }
 
-pub fn remove_call(ctx: &mut Context, _corpus: &CorpusWrapper, rng: &mut RngType) -> bool {
+pub fn remove_call(ctx: &mut Context, _corpus: &CorpusWrapper, rng: &mut RngType, current_period: bool, dependency_choice: bool) -> bool {
     if ctx.calls.is_empty() {
         return false;
     }
@@ -72,7 +73,7 @@ pub fn remove_call(ctx: &mut Context, _corpus: &CorpusWrapper, rng: &mut RngType
 
 /// 依据选择表，选择一个新的系统调用插入到位置 `idx`
 /// Select new call to location `idx`.
-fn select_call_to(ctx: &mut Context, rng: &mut RngType, idx: usize) -> SyscallId {
+fn select_call_to(ctx: &mut Context, rng: &mut RngType, idx: usize, current_period: bool, dependency_choice: bool) -> SyscallId {
     let mut candidates: HashMap<SyscallId, u64> = HashMap::new();
     let r = ctx.relation().inner.read().unwrap();
     let calls = ctx.calls();
@@ -82,11 +83,39 @@ fn select_call_to(ctx: &mut Context, rng: &mut RngType, idx: usize) -> SyscallId
     for sid in calls[..idx].iter().map(|c| c.sid()) {
         for candidate in r.influence_of(sid).iter().copied() {
             let entry = candidates.entry(candidate).or_default();
-            *entry += 1;
-
-            if let Some(path_and_verification_number) = r.relate_path_with_verification_num(candidate, sid) {
-                for number in path_and_verification_number.values() {
-                    *entry += *number as u64;
+            // 利用阶段
+            if current_period == false {
+                // 如果显式依赖的收益高
+                if dependency_choice == true {
+                    *entry += 1;
+                    if let Some(path_and_verification_number) = r.relate_path_with_verification_num(candidate, sid) {
+                        for number in path_and_verification_number.values() {
+                            *entry += *number as u64;
+                        }
+                    }
+                }
+                // 如果是隐式依赖 
+                else {
+                    // 如果隐式依赖的收益高
+                    if dependency_choice == false {
+                        if !(ctx.relation().is_explicit_dependency(ctx.target(), sid, candidate)) {
+                            *entry += 1;
+                            if let Some(path_and_verification_number) = r.relate_path_with_verification_num(candidate, sid) {
+                                for number in path_and_verification_number.values() {
+                                    *entry += *number as u64;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            // 探索阶段，谁都用
+            else {
+                *entry += 1;
+                if let Some(path_and_verification_number) = r.relate_path_with_verification_num(candidate, sid) {
+                    for number in path_and_verification_number.values() {
+                        *entry += *number as u64;
+                    }
                 }
             }
         }
@@ -96,13 +125,46 @@ fn select_call_to(ctx: &mut Context, rng: &mut RngType, idx: usize) -> SyscallId
     // If a call has verified path, improve its weight.
     if idx != calls.len() {
         for sid in calls[idx..].iter().map(|c| c.sid()) {
-            for candidate in r.influence_by_of(sid).iter().copied() {
+            for candidate in r.influence_of(sid).iter().copied() {
                 let entry = candidates.entry(candidate).or_default();
-                *entry += 1;
-
-                if let Some(path_and_verification_number) = r.relate_path_with_verification_num(sid, candidate) {
-                    for number in path_and_verification_number.values() {
-                        *entry += *number as u64;
+                // 利用阶段
+                if current_period == false {
+                    // 如果显式依赖的收益高
+                    if dependency_choice == true {
+                        // 这里加一个，让隐式依赖的相对权重大一点
+                        if !(ctx.relation().is_explicit_dependency(ctx.target(), sid, candidate)) {
+                            *entry += (1.0 * ctx.relation().dependency_ratio()) as u64;
+                        }
+                        if let Some(path_and_verification_number) = r.relate_path_with_verification_num(candidate, sid) {
+                            for number in path_and_verification_number.values() {
+                                *entry += *number as u64;
+                            }
+                        }
+                    }
+                    // 如果是隐式依赖 
+                    else {
+                        // 如果隐式依赖的收益高
+                        if dependency_choice == false {
+                            if !(ctx.relation().is_explicit_dependency(ctx.target(), sid, candidate)) {
+                                *entry += 1;
+                                if let Some(path_and_verification_number) = r.relate_path_with_verification_num(candidate, sid) {
+                                    for number in path_and_verification_number.values() {
+                                        *entry += *number as u64;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                // 探索阶段，谁都用
+                else {
+                    if !(ctx.relation().is_explicit_dependency(ctx.target(), sid, candidate)) {
+                        *entry += (1.0 * ctx.relation().dependency_ratio()) as u64;
+                    }
+                    if let Some(path_and_verification_number) = r.relate_path_with_verification_num(candidate, sid) {
+                        for number in path_and_verification_number.values() {
+                            *entry += *number as u64;
+                        }
                     }
                 }
             }

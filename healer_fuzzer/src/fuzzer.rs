@@ -6,16 +6,12 @@ use anyhow::Context;
 use healer_core::{
     corpus::CorpusWrapper, gen::{gen_prog, minimize}, mutation::mutate, prog::Prog, relation::RelationWrapper, target::Target, HashMap, HashSet, RngType, 
     config2code::Config2Code,
+    scheduler::Scheduler,
 };
 use healer_vm::{qemu::QemuHandle};
 use sha1::Digest;
 use std::{
-    cell::Cell,
-    collections::VecDeque,
-    fs::{create_dir_all, write, File},
-    io::{BufWriter, Write, ErrorKind},
-    sync::{Arc, Mutex},
-    time::{Duration, Instant},
+    cell::Cell, collections::VecDeque, fs::{create_dir_all, write, File}, io::{BufWriter, ErrorKind, Write}, sync::{atomic::{AtomicBool, AtomicU8, Ordering}, Arc, Mutex}, thread::sleep, time::{Duration, Instant}
 };
 use syz_wrapper::{
     exec::{
@@ -36,11 +32,23 @@ pub struct SharedState {
     pub(crate) crash: Arc<CrashManager>,
     // 新增项，配置项与代码块的映射信息
     pub(crate) config2code: Arc<Config2Code>,
-    // 新增项，统计产生新覆盖的种子数量
-    pub(crate) newCoverageSeedNum: Arc<Mutex<u64>>,
-    // 新增项，每隔固定时间加入到种子库的新种子
-    pub(crate) newcorpus: Arc<Mutex<Vec<Prog>>>,
+    // // 新增项，显式依赖带来的新覆盖值
+    // pub(crate) cov_by_explicit: Arc<Mutex<u32>>,
+    // // 新增项，隐式依赖带来的新覆盖值
+    // pub(crate) cov_by_implicit: Arc<Mutex<u32>>,
+    // // 新增项，在探索期间执行的种子数
+    // pub(crate) explored_seeds: Arc<Mutex<u64>>,
+    // 新增项，调度器
+    pub(crate) scheduler: Arc<Scheduler>,
+    // 新增项，当前是探索还是利用阶段
+    pub(crate) current_period: Arc<AtomicBool>,
+    // 新增项，当前选择显式依赖还是隐式依赖
+    pub(crate) dependency_choice: Arc<AtomicBool>,
 }
+
+// 新增：设置探索和利用的时间间隔
+const EXPLORATION_PERIOD: bool = true;
+const EXPLOITATION_PERIOD: bool = false;
 
 impl Clone for SharedState {
     fn clone(&self) -> Self {
@@ -52,9 +60,38 @@ impl Clone for SharedState {
             feedback: Arc::clone(&self.feedback),
             crash: Arc::clone(&self.crash),
             config2code: Arc::clone(&self.config2code),
-            newCoverageSeedNum: Arc::clone(&self.newCoverageSeedNum),
-            newcorpus: Arc::clone(&self.newcorpus),
+            // cov_by_explicit: Arc::clone(&self.cov_by_explicit),
+            // cov_by_implicit: Arc::clone(&self.cov_by_implicit),
+            // explored_seeds: Arc::clone(&self.explored_seeds),
+            scheduler: Arc::clone(&self.scheduler),
+            current_period: Arc::clone(&self.current_period),
+            // true是显式， false是隐式
+            dependency_choice: Arc::clone(&self.dependency_choice),
         }
+    }
+}
+
+impl SharedState {
+    pub fn try_update_scheduler(&self, explore_du: Duration, exploit_du: Duration) -> anyhow::Result<()> {
+        let mut last_update = Instant::now();
+        self.current_period.store(EXPLORATION_PERIOD, Ordering::Relaxed);
+        self.dependency_choice.store(true, Ordering::Relaxed);
+        while !stop_soon() {
+            // 在探索阶段的开始，需要重置调度器，把权重，执行种子数，覆盖率都设成0
+            self.scheduler.reset();
+            println!("Switch to exploration phase.");
+            sleep(explore_du);
+            let du = last_update.elapsed();
+            if du >= explore_du {
+                self.scheduler.update_with_ucb();
+                self.current_period.store(false, Ordering::Relaxed);
+                self.dependency_choice.store(false, Ordering::Relaxed);
+                println!("Switch to exploitation phase.");
+                sleep(exploit_du);
+                last_update = Instant::now();
+            }
+        }
+        Ok(())
     }
 }
 
@@ -136,7 +173,7 @@ impl Fuzzer {
         const GENERATE_PERIOD: u64 = 50;
 
         // 新增：每隔一段时间将覆盖信息存储到文件里
-        const OUTPUT_COVERAGE_PERIOD: u64 = 200;
+        // const OUTPUT_COVERAGE_PERIOD: u64 = 200;
 
         for i in 0_u64.. {
 
@@ -159,17 +196,24 @@ impl Fuzzer {
                 );
                 self.execute_one(p)
                     .context("failed to execute generated prog")?;
+                // println!("Fuzzing loop1: {}", i);
             } else {
                 let mut p = self.shared_state.corpus.select_one(&mut self.rng).unwrap();
+                let current_period = self.shared_state.current_period.clone();
+                let dependency_choice = self.shared_state.dependency_choice.clone();
+                // 如果进入了利用阶段，那就要依据概率选择显式依赖还是隐式依赖了
                 mutate(
                     &self.shared_state.target,
                     &self.shared_state.relation,
                     &self.shared_state.corpus,
                     &mut self.rng,
                     &mut p,
+                    current_period.load(Ordering::Relaxed),
+                    dependency_choice.load(Ordering::Relaxed),
                 );
                 self.execute_one(p)
                     .context("failed to execute mutated prog")?;
+                // println!("Fuzzing loop2: {}", i);
             }
 
             if stop_soon() {
@@ -212,13 +256,6 @@ impl Fuzzer {
                     self.shared_state.feedback.check_max_cov(extra.branches);
                     // TODO handle extra
                 }
-
-                // 如果种子有新覆盖，给这个数加1
-                if new_cov {
-                    let mut num = self.shared_state.newCoverageSeedNum.lock().unwrap();
-                    *num += 1;
-                }
-
                 // let mut idx_in_call_configs: usize = 0;
                 for (idx, brs) in calls {
                     if self.config.vmlinux_path != None && self.config.kernel_src_path != None {
@@ -283,6 +320,7 @@ impl Fuzzer {
 
         // calibrate new cov by executing it three times
         let mut failed = 0;
+        let mut new_cov: usize;
         for _ in 0..3 {
             let ret = self.reexec(p, idx)?;
             if ret.is_none() {
@@ -297,6 +335,7 @@ impl Fuzzer {
             if new.is_empty() {
                 return Ok(());
             }
+            new_cov = new.len();
         }
 
         // minimize->学习新依赖->添加到依赖库
@@ -333,6 +372,20 @@ impl Fuzzer {
             
             // println!("new relation: {:} -> {:}", a, b);
             // TODO dump relations
+
+            if self.shared_state.relation.is_explicit_dependency(&self.shared_state.target, a.id(), b.id()) {
+                // let mut cov_by_explicit = self.shared_state.cov_by_explicit.lock().unwrap();
+                // *cov_by_explicit += new.len() as u32;
+                self.shared_state.scheduler.inc_exec_total(0);
+                self.shared_state.scheduler.inc_intst_total(0);
+            } else {
+                // let mut cov_by_implicit = self.shared_state.cov_by_implicit.lock().unwrap();
+                // *cov_by_implicit += new.len() as u32;
+                self.shared_state.scheduler.inc_exec_total(1);
+                self.shared_state.scheduler.inc_intst_total(1);
+            }
+            // let mut explored_seeds = self.shared_state.explored_seeds.lock().unwrap();
+            // *explored_seeds += 1;
 
             self.shared_state
                 .stats
@@ -385,17 +438,32 @@ impl Fuzzer {
                 // let syscall_a = self.shared_state.target.syscall_of(a);
                 // let syscall_b = self.shared_state.target.syscall_of(b);
                 // println!("new relation: {:} -> {:}", syscall_a, syscall_b);
+                if self.shared_state.relation.is_explicit_dependency(&self.shared_state.target, a, b) {
+                    // let mut cov_by_explicit = self.shared_state.cov_by_explicit.lock().unwrap();
+                    // *cov_by_explicit += new.len() as u32;
+                    self.shared_state.scheduler.inc_exec_total(0);
+                    self.shared_state.scheduler.inc_intst_total(0);
+                } else {
+                    // let mut cov_by_implicit = self.shared_state.cov_by_implicit.lock().unwrap();
+                    // *cov_by_implicit += new.len() as u32;
+                    self.shared_state.scheduler.inc_exec_total(1);
+                    self.shared_state.scheduler.inc_intst_total(1);
+                }
+                // let mut explored_seeds = self.shared_state.explored_seeds.lock().unwrap();
+                // *explored_seeds += 1;
+    
+                self.shared_state
+                    .stats
+                    .set_re(self.shared_state.relation.num() as u64);
             }
         }
         
         // 记录种子里的显式与隐式依赖对
-        p.foundSyscallPairInProg(&self.shared_state.target, &self.shared_state.relation);
+        // 这里的种子已经是裁剪过的了，因此保证那对依赖关系对一定是存在的
+        // p.foundSyscallPairInProg(&self.shared_state.target, &self.shared_state.relation);
 
         // save to local
         self.do_save_prog(p.clone(), &brs)?;
-
-        // 将新种子存到newcorpus里去
-        self.shared_state.newcorpus.lock().unwrap().push(p.clone());
 
         // fail call that found new cov
         if self.should_fail(&p) {

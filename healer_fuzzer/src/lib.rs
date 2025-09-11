@@ -28,12 +28,14 @@ use healer_core::{
     target::Target,
     HashSet,
     config2code::Config2Code,
+    scheduler::Scheduler
 };
 use healer_vm::{qemu::QemuHandle, ssh::ssh_basic_cmd};
 use rand::{
     prelude::{SliceRandom, SmallRng},
     SeedableRng,
 };
+use sha1::digest::generic_array::typenum::Min;
 use shared_memory::{Shmem, ShmemConf, ShmemError};
 use std::{
     collections::VecDeque,
@@ -43,7 +45,7 @@ use std::{
     path::{Path, PathBuf},
     process::Command,
     str::FromStr,
-    sync:: {Arc, Mutex},
+    sync:: {Arc, atomic::AtomicBool},
     thread::{self, sleep},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -161,9 +163,12 @@ pub fn boot(mut config: Config) -> anyhow::Result<()> {
         feedback: Arc::new(Feedback::new()),
         crash: Arc::new(crash),
         config2code: Arc::new(config2code),
-        // 初始化产生新覆盖的种子数量为0
-        newCoverageSeedNum: Arc::new(Mutex::new(0u64)),
-        newcorpus: Arc::new(Mutex::new(Vec::new())),
+        // cov_by_explicit: Arc::new(Mutex::new(0 as u32)),
+        // cov_by_implicit: Arc::new(Mutex::new(0 as u32)),
+        // explored_seeds: Arc::new(Mutex::new(0 as u64)),
+        scheduler: Arc::new(Scheduler::new()),
+        current_period: Arc::new(AtomicBool::new(true)),
+        dependency_choice: Arc::new(AtomicBool::new(false)),
     };
     log::info!("Config2code is loaded.");
 
@@ -220,13 +225,16 @@ pub fn boot(mut config: Config) -> anyhow::Result<()> {
         }
     });
 
-    // 新增：每隔5分钟记录totalcorpus和newcorpus信息
-    let totalcorpus_clone = Arc::clone(&shared_state.corpus);
-    let newcorpus_clone = Arc::clone(&shared_state.newcorpus);
+    // 初始化调度器
+    let shared_state3 = SharedState::clone(&shared_state);
     thread::spawn(move || {
-        if let Err(e) = stats.report_corpus(Duration::from_secs(300), Some("total_dependencies_ratio.txt"), Some("dependencies_ratio.txt"), totalcorpus_clone, newcorpus_clone) {
-            log::error!("failed to write dependencies ratio: {}", e);
-        }
+        if let Err(e) = shared_state3.try_update_scheduler(
+        Duration::from_secs(15 * 60),
+        Duration::from_secs(5 * 60),
+            ) {
+            // Handle this more carefully
+            log::error!("failed to update scheduler: {}", e);
+        }        
     });
 
     let mut fuzzers = Vec::with_capacity(config.job as usize);

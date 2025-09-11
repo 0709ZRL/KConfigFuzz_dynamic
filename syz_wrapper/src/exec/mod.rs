@@ -293,13 +293,15 @@ impl ExecutorHandle {
         opt: &ExecOpt,
     ) -> Result<ProgExecInfo<'a, 'a>, ExecError> {
         if let Err(ExecError::Io(e)) = self.req_exec(target, p, opt) {
-            log::debug!("failed to send exec req: {}", e);
+            // log::debug!("failed to send exec req: {}", e);
+            println!("failed to send exec req: {}", e);
             self.kill();
             return Err(ExecError::Io(e));
         }
 
         if let Err(e) = self.wait_finish() {
-            log::debug!("error happened during waiting exec finish: {}", e);
+            // log::debug!("error happened during waiting exec finish: {}", e);
+            println!("error happened during waiting exec finish: {}", e);
             self.kill();
             return Err(e);
         }

@@ -83,8 +83,16 @@ impl RelationWrapper {
 
     /// 检查当前的系统调用对是显式依赖还是隐式依赖。
     /// 注：这个系统调用对必须是依赖对。
+    #[inline]
     pub fn is_explicit_dependency(&self, target: &Target, a: SyscallId, b: SyscallId) -> bool {
         Relation::calculate_influence(target, a, b)
+    }
+
+    /// 返回显式/隐式的权重
+    #[inline]
+    pub fn dependency_ratio(&self) -> f32 {
+        let inner = self.inner.read().unwrap();
+        inner.dependency_ratio
     }
 }
 
@@ -95,6 +103,9 @@ pub struct Relation {
     influence_by: HashMap<SyscallId, Vec<SyscallId>>,
     relate_path: HashMap::<SyscallPair, HashMap<u64, u32>>,
     n: usize,
+    explicit_num: u32,
+    implicit_num: u32,
+    dependency_ratio: f32,
 }
 
 impl Relation {
@@ -113,6 +124,9 @@ impl Relation {
             influence_by,
             relate_path,
             n: 0,
+            explicit_num: 0,
+            implicit_num: 0,
+            dependency_ratio: 1.0,
         };
         let mut explicit_pairs = HashSet::new();
         let mut generate_dependency: f32 = 0.0;
@@ -132,6 +146,7 @@ impl Relation {
                 }
             }
             println!("Length of explicit depndencies: {:}", explicit_pairs.len());
+            r.explicit_num = explicit_pairs.len() as u32;
             drop(explicit_pairs);
         }
 
@@ -200,6 +215,13 @@ impl Relation {
             }
         }
         println!("Length of implicit dependencies: {:}", implicit_pairs.len());
+        self.implicit_num = implicit_pairs.len() as u32;
+        if self.implicit_num != 0 {
+            let ratio = self.explicit_num as f32 / self.implicit_num as f32;
+            if ratio != 0.0 {
+                self.dependency_ratio = ratio;
+            }
+        }
         drop(implicit_pairs);
         Ok(())
     }

@@ -20,9 +20,10 @@ use crate::{
     HashMap, HashSet, RngType,
 };
 use rand::Rng;
+use std::sync::atomic::AtomicBool;
 
 /// Select a call and mutate its args randomly.
-pub fn mutate_call_args(ctx: &mut Context, _corpus: &CorpusWrapper, rng: &mut RngType) -> bool {
+pub fn mutate_call_args(ctx: &mut Context, _corpus: &CorpusWrapper, rng: &mut RngType, current_period: bool, dependency_choice: bool) -> bool {
     if ctx.calls.is_empty() {
         return false;
     }

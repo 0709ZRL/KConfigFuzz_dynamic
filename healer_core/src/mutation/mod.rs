@@ -16,6 +16,7 @@ use crate::{
     HashMap, HashSet, RngType,
 };
 use rand::prelude::*;
+use std::sync::atomic::AtomicBool;
 
 pub mod buffer;
 pub mod call;
@@ -32,8 +33,10 @@ pub fn mutate(
     corpus: &CorpusWrapper,
     rng: &mut RngType,
     p: &mut Prog,
+    current_period: bool,
+    dependency_choice: bool,
 ) -> bool {
-    type MutateOperation = fn(&mut Context, &CorpusWrapper, &mut RngType) -> bool;
+    type MutateOperation = fn(&mut Context, &CorpusWrapper, &mut RngType, bool, bool) -> bool;
     const OPERATIONS: [MutateOperation; 4] = [insert_calls, mutate_call_args, splice, remove_call];
     // 注意这里改动了
     const WEIGHTS: [u64; 4] = [400, 980, 999, 1000];
@@ -50,7 +53,7 @@ pub fn mutate(
     while tries < 128 && (!mutated || ctx.calls.is_empty() || rng.gen_ratio(1, 2)) {
         let idx = choose_weighted(rng, &WEIGHTS);
         debug_info!("using strategy-{}", idx);
-        mutated = OPERATIONS[idx](&mut ctx, corpus, rng);
+        mutated = OPERATIONS[idx](&mut ctx, corpus, rng, current_period, dependency_choice);
 
         // 如果种子的长度超限了，删除多余的系统调用
         if ctx.calls.len() >= prog_len_range().end {
